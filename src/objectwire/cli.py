@@ -25,6 +25,7 @@ import xml.etree.ElementTree as ET
 from xml.dom import minidom
 from urllib.parse import urlparse
 from typing import Optional, Any, Dict
+from pathlib import Path
 
 import click
 from rich.console import Console
@@ -59,6 +60,73 @@ try:
         openai = None
 except ImportError:
     openai = None
+
+
+# ─────────────────────────────────────────────────────────────
+# Dev Mode - File Watcher for Auto-Reload
+# ─────────────────────────────────────────────────────────────
+
+def run_dev_mode():
+    """Run in development mode with auto-reload on file changes."""
+    try:
+        from watchdog.observers import Observer
+        from watchdog.events import FileSystemEventHandler
+    except ImportError:
+        console.print("[red]Error:[/] watchdog not installed. Run: pip install watchdog")
+        sys.exit(1)
+    
+    src_path = Path(__file__).parent
+    
+    class ReloadHandler(FileSystemEventHandler):
+        def __init__(self):
+            self.process = None
+            self.start_app()
+        
+        def start_app(self):
+            """Start the objectwire interactive mode as a subprocess."""
+            if self.process:
+                self.process.terminate()
+                self.process.wait()
+            
+            console.print("\n[dim]─" * 50 + "[/]")
+            console.print("[green]✓[/] [bold]Starting ObjectWire...[/]")
+            console.print("[dim]─" * 50 + "[/]\n")
+            
+            # Run python -m objectwire (without --dev to avoid recursion)
+            self.process = subprocess.Popen(
+                [sys.executable, "-m", "objectwire"],
+                cwd=src_path.parent.parent,
+            )
+        
+        def on_modified(self, event):
+            if event.src_path.endswith('.py'):
+                rel_path = Path(event.src_path).relative_to(src_path.parent.parent)
+                console.print(f"\n[yellow]⟳[/] File changed: [cyan]{rel_path}[/]")
+                console.print("[yellow]  Reloading...[/]")
+                self.start_app()
+    
+    console.print(Panel(
+        "[bold orange1]🔧 DEV MODE[/]\n\n"
+        "Watching for file changes in [cyan]src/objectwire/[/]\n"
+        "Press [bold]Ctrl+C[/] to stop",
+        border_style="orange1",
+        padding=(1, 2)
+    ))
+    
+    handler = ReloadHandler()
+    observer = Observer()
+    observer.schedule(handler, str(src_path), recursive=True)
+    observer.start()
+    
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Stopping dev mode...[/]")
+        if handler.process:
+            handler.process.terminate()
+        observer.stop()
+    observer.join()
 
 
 # ─────────────────────────────────────────────────────────────
@@ -742,10 +810,13 @@ def interactive_mode():
 
 @click.group(invoke_without_command=True)
 @click.version_option(version="0.1.0", prog_name="objectwire")
+@click.option("--dev", is_flag=True, help="Run in dev mode with auto-reload on file changes")
 @click.pass_context
-def main(ctx):
+def main(ctx, dev: bool):
     """🔌 ObjectWire - AI-Powered RSS/URL Scraper Agent for Prediction Markets"""
-    if ctx.invoked_subcommand is None:
+    if dev:
+        run_dev_mode()
+    elif ctx.invoked_subcommand is None:
         interactive_mode()
 
 
