@@ -317,7 +317,7 @@ def show_banner():
 [orange3]     #### | ####[/]
 [orange3]      ###   ###[/]
 [orange3]   ##   #####   ##[/]
-[orange3]  ###   # | #   ###[/]
+[orange3]  ###   # 🍀 #   ###[/]
 [orange3]   ##   #####   ##[/]
 [orange3]      ###   ###[/]
 [orange3]     #### | ####[/]
@@ -363,6 +363,10 @@ def show_help():
 |---------|-------------|
 | `<rss_feed_url>` | Just paste an RSS feed to see 3 latest posts |
 | `<url>` | Just paste any URL to scrape and analyze it |
+| `1`, `2`, `3`... | Select article from RSS feed |
+| `1 json` | Get article 1 as JSON |
+| `2 xml` | Get article 2 as XML |
+| `3 json xml` | Get article 3 as both JSON and XML |
 | `scrape <url>` | Scrape URL and generate prediction event |
 | `rss <feed_url>` | Parse and display RSS feed items (15 max) |
 | `post` | Post last event to blockchain |
@@ -440,6 +444,7 @@ def interactive_mode():
         mouse_support=False  # Disable to allow normal terminal mouse behavior (select, scroll)
     )
     last_event: Optional[PredictionEvent] = None
+    last_rss_items: list = []  # Store last RSS feed items for number selection
     
     while True:
         try:
@@ -447,9 +452,62 @@ def interactive_mode():
             if not cmd:
                 continue
             
-            parts = cmd.split(maxsplit=1)
+            parts = cmd.split()
             action = parts[0].lower()
-            args = parts[1] if len(parts) > 1 else ""
+            args = " ".join(parts[1:]) if len(parts) > 1 else ""
+            
+            # Check if first part is a number (article selection from RSS)
+            if action.isdigit() and last_rss_items:
+                article_num = int(action)
+                if 1 <= article_num <= len(last_rss_items):
+                    item = last_rss_items[article_num - 1]
+                    article_url = item["link"]
+                    
+                    # Parse output format options
+                    show_json = "json" in args.lower()
+                    show_xml = "xml" in args.lower()
+                    
+                    # Default to showing the prediction panel if no format specified
+                    if not show_json and not show_xml:
+                        show_json = False
+                        show_xml = False
+                    
+                    console.print(f"\n[dim]Scraping article {article_num}: {item['title'][:50]}...[/]")
+                    
+                    with console.status("[green]Scraping article..."):
+                        data = scrape_url(article_url)
+                    
+                    if not data:
+                        console.print("[red]❌ Failed to scrape article[/]")
+                        continue
+                    
+                    last_event = analyze(data)
+                    output = last_event.model_dump()
+                    
+                    if show_json or show_xml:
+                        if show_json:
+                            console.print("\n[bold orange3]═══ JSON ═══[/]")
+                            console.print_json(data=output)
+                        if show_xml:
+                            console.print("\n[bold orange3]═══ XML ═══[/]")
+                            print_xml(output, root_name="prediction_event")
+                    else:
+                        # Show prediction panel
+                        console.print(Panel(
+                            f"[bold cyan]{last_event.title}[/]\n\n"
+                            f"{last_event.description}\n\n"
+                            f"[dim]Options:[/] {', '.join(last_event.options)}\n"
+                            f"[dim]Confidence:[/] {last_event.confidence:.0%}\n"
+                            f"[dim]Resolves:[/] {last_event.resolution_date}",
+                            title="🎯 Prediction Event",
+                            border_style="green"
+                        ))
+                    
+                    console.print(f"\n[dim]Tip: Type 'post' to send to blockchain, 'copy' to copy, or '{article_num} json xml' for both formats[/]")
+                    continue
+                else:
+                    console.print(f"[red]Invalid article number. Choose 1-{len(last_rss_items)}[/]")
+                    continue
             
             # Exit
             if action in ("exit", "quit", "q"):
@@ -501,6 +559,9 @@ def interactive_mode():
                     console.print("[red]❌ Failed to parse RSS feed[/]")
                     continue
                 
+                # Store items for number selection
+                last_rss_items = feed["items"][:15]
+                
                 table = Table(title=feed["title"])
                 table.add_column("#", style="dim", width=3)
                 table.add_column("Title", style="cyan")
@@ -510,7 +571,8 @@ def interactive_mode():
                     table.add_row(str(i), item["title"][:60], item["published"][:20] if item["published"] else "")
                 
                 console.print(table)
-                console.print(f"\n[dim]Found {len(feed['items'])} items. Use 'scrape <url>' to process an article.[/]")
+                console.print(f"\n[dim]Type a number (1-{len(last_rss_items)}) to scrape that article. Add 'json' or 'xml' for formatted output.[/]")
+                console.print(f"[dim]Example: '1 json' or '2 xml' or '3 json xml'[/]")
             
             # Post
             elif action == "post":
@@ -627,7 +689,9 @@ def interactive_mode():
                         feed = parse_rss(url)
                     
                     if feed and feed.get("items"):
-                        # It's an RSS feed - show top 3 items
+                        # It's an RSS feed - show top 3 items and store for selection
+                        last_rss_items = feed["items"][:3]
+                        
                         console.print(f"\n[bold orange3]📡 RSS Feed Detected:[/] {feed['title']}")
                         console.print("[dim]Showing 3 most recent posts:[/]\n")
                         
@@ -636,12 +700,13 @@ def interactive_mode():
                         table.add_column("Title", style="orange3")
                         table.add_column("Link", style="dim")
                         
-                        for i, item in enumerate(feed["items"][:3], 1):
+                        for i, item in enumerate(last_rss_items, 1):
                             link = item["link"][:45] + "..." if len(item["link"]) > 45 else item["link"]
                             table.add_row(str(i), item["title"][:55], link)
                         
                         console.print(table)
-                        console.print(f"\n[dim]Use 'scrape <url>' to generate a prediction from any article.[/]")
+                        console.print(f"\n[dim]Type 1, 2, or 3 to scrape. Add 'json' or 'xml' for formatted output.[/]")
+                        console.print(f"[dim]Example: '1 json' or '2 xml' or '3 json xml'[/]")
                     else:
                         # Not RSS, try scraping as webpage
                         with console.status("[green]Scraping URL..."):
