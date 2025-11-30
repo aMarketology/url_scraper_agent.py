@@ -48,7 +48,7 @@ load_dotenv()
 console = Console()
 
 # Configuration
-BLOCKCHAIN_URL = os.getenv("BLOCKCHAIN_API_URL", "http://localhost:3000")
+BLOCKCHAIN_URL = os.getenv("BLOCKCHAIN_API_URL", "http://localhost:8080")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Try importing OpenAI
@@ -220,7 +220,6 @@ class PredictionEvent(BaseModel):
     options: list[str]
     confidence: float
     source_url: str
-    resolution_date: str
 
 
 # ─────────────────────────────────────────────────────────────
@@ -289,8 +288,7 @@ def analyze(scraped: dict) -> PredictionEvent:
                     category=data.get('category', 'general'),
                     options=data.get('options', ['Yes', 'No']),
                     confidence=float(data.get('confidence', 0.7)),
-                    source_url=scraped['url'],
-                    resolution_date=data.get('resolution_date', '2025-12-31T23:59:00-05:00')
+                    source_url=scraped['url']
                 )
         except Exception as e:
             pass  # Fall through to fallback
@@ -302,25 +300,29 @@ def analyze(scraped: dict) -> PredictionEvent:
         category="general",
         options=["Yes", "No", "Partially"],
         confidence=0.5,
-        source_url=scraped['url'],
-        resolution_date="2025-12-31T23:59:00-05:00"
+        source_url=scraped['url']
     )
 
 
-def post_to_blockchain(event: PredictionEvent) -> Optional[str]:
+def post_to_blockchain(event: PredictionEvent) -> Optional[dict]:
     """Post event to blockchain API."""
     payload = {
-        "source": {"domain": urlparse(event.source_url).netloc, "url": event.source_url},
-        "event": event.model_dump()
+        "source": {
+            "domain": "objectwire-agent",
+            "url": event.source_url
+        },
+        "event": {
+            "title": event.title,
+            "description": event.description,
+            "category": event.category,
+            "options": event.options,
+            "confidence": event.confidence,
+            "source_url": event.source_url
+        }
     }
     
     try:
-        # Health check
-        health = requests.get(f"{BLOCKCHAIN_URL}/health", timeout=5)
-        if health.status_code != 200:
-            return None
-        
-        # Post event
+        # Post event directly (no health check needed)
         resp = requests.post(
             f"{BLOCKCHAIN_URL}/ai/events",
             json=payload,
@@ -328,10 +330,10 @@ def post_to_blockchain(event: PredictionEvent) -> Optional[str]:
             timeout=30
         )
         resp.raise_for_status()
-        data = resp.json()
-        return data.get('id') or data.get('market_id') or data.get('event_id')
+        return resp.json()
     
-    except requests.exceptions.RequestException:
+    except requests.exceptions.RequestException as e:
+        console.print(f"[red]❌ Failed to post to blockchain:[/] {e}")
         return None
 
 
@@ -373,24 +375,25 @@ def show_banner():
     if len(cwd) > 35:
         cwd = "..." + cwd[-32:]
     
-    # Build the welcome panel content with ASCII four-leaf clover
+    # Build the welcome panel content with ASCII shamrock
     left_side = f"""
 [bold orange3]ObjectWire[/] v0.1.0
 ─────────────────────────────
 
 [bold orange1]      Welcome![/]
 
-[orange3]       ##   ##[/]
-[orange3]      ###   ###[/]
-[orange3]     #### | ####[/]
-[orange3]      ###   ###[/]
-[orange3]   ##   #####   ##[/]
-[orange3]  ###   # 🍀 #   ###[/]
-[orange3]   ##   #####   ##[/]
-[orange3]      ###   ###[/]
-[orange3]     #### | ####[/]
-[orange3]      ###   ###[/]
-[orange3]       ##   ##[/]
+[orange3]           ,@@@,[/]
+[orange3]          @@@@@@@[/]
+[orange3]   ,@@@, '@@@@@@@' ,@@@,[/]
+[orange3]  @@@@@@@ '@@@@@@' @@@@@@@[/]
+[orange3]  '@@@@@@'  @@@@  '@@@@@@'[/]
+[orange3]    '@@@' ,@@@@@@, '@@@'[/]
+[orange3]         @@@@@@@@@@[/]
+[orange3]          '@@@@@@'[/]
+[orange3]            @@@@[/]
+[orange3]            @@[/]
+[orange3]            @@[/]
+[orange3]            @@[/]
 
 [dim]Prediction Markets[/]
 [dim]{cwd}[/]
@@ -608,11 +611,23 @@ def interactive_mode():
                     f"[bold cyan]{last_event.title}[/]\n\n"
                     f"{last_event.description}\n\n"
                     f"[dim]Options:[/] {', '.join(last_event.options)}\n"
-                    f"[dim]Confidence:[/] {last_event.confidence:.0%}\n"
-                    f"[dim]Resolves:[/] {last_event.resolution_date}",
+                    f"[dim]Confidence:[/] {last_event.confidence:.0%}",
                     title="🎯 Prediction Event",
                     border_style="green"
                 ))
+                
+                # Auto-post to blockchain
+                with console.status("[green]Posting to blockchain..."):
+                    result = post_to_blockchain(last_event)
+                
+                if result:
+                    console.print(f"[green]✓ Posted to blockchain![/]")
+                    if isinstance(result, dict):
+                        event_id = result.get('id') or result.get('market_id') or result.get('event_id')
+                        if event_id:
+                            console.print(f"[dim]Event ID: {event_id}[/]")
+                else:
+                    console.print("[yellow]⚠ Could not post to blockchain (service may be offline)[/]")
             
             # RSS
             elif action == "rss":
@@ -649,10 +664,19 @@ def interactive_mode():
                     continue
                 
                 # Show preview data
-                output = last_event.model_dump()
                 payload = {
-                    "source": {"domain": urlparse(last_event.source_url).netloc, "url": last_event.source_url},
-                    "event": output
+                    "source": {
+                        "domain": "objectwire-agent",
+                        "url": last_event.source_url
+                    },
+                    "event": {
+                        "title": last_event.title,
+                        "description": last_event.description,
+                        "category": last_event.category,
+                        "options": last_event.options,
+                        "confidence": last_event.confidence,
+                        "source_url": last_event.source_url
+                    }
                 }
                 
                 console.print("\n[bold cyan]═══ JSON Preview ═══[/]")
@@ -668,10 +692,11 @@ def interactive_mode():
                     continue
                 
                 with console.status("[green]Posting to blockchain..."):
-                    market_id = post_to_blockchain(last_event)
+                    result = post_to_blockchain(last_event)
                 
-                if market_id:
-                    console.print(f"[green]✓ Posted! Market ID:[/] [bold]{market_id}[/]")
+                if result:
+                    event_id = result.get('id') or result.get('market_id') or result.get('event_id') if isinstance(result, dict) else result
+                    console.print(f"[green]✓ Posted! Event ID:[/] [bold]{event_id}[/]")
                 else:
                     console.print("[red]❌ Failed to post to blockchain[/]")
             
@@ -736,11 +761,23 @@ def interactive_mode():
                                 f"[bold cyan]{last_event.title}[/]\n\n"
                                 f"{last_event.description}\n\n"
                                 f"[dim]Options:[/] {', '.join(last_event.options)}\n"
-                                f"[dim]Confidence:[/] {last_event.confidence:.0%}\n"
-                                f"[dim]Resolves:[/] {last_event.resolution_date}",
+                                f"[dim]Confidence:[/] {last_event.confidence:.0%}",
                                 title="🎯 Prediction Event",
                                 border_style="green"
                             ))
+                            
+                            # Auto-post to blockchain
+                            with console.status("[green]Posting to blockchain..."):
+                                result = post_to_blockchain(last_event)
+                            
+                            if result:
+                                console.print(f"[green]✓ Posted to blockchain![/]")
+                                if isinstance(result, dict):
+                                    event_id = result.get('id') or result.get('market_id') or result.get('event_id')
+                                    if event_id:
+                                        console.print(f"[dim]Event ID: {event_id}[/]")
+                            else:
+                                console.print("[yellow]⚠ Could not post to blockchain (service may be offline)[/]")
                         else:
                             console.print("[red]❌ Failed to parse URL[/]")
                 else:
@@ -786,11 +823,23 @@ def interactive_mode():
                                 f"[bold cyan]{last_event.title}[/]\n\n"
                                 f"{last_event.description}\n\n"
                                 f"[dim]Options:[/] {', '.join(last_event.options)}\n"
-                                f"[dim]Confidence:[/] {last_event.confidence:.0%}\n"
-                                f"[dim]Resolves:[/] {last_event.resolution_date}",
+                                f"[dim]Confidence:[/] {last_event.confidence:.0%}",
                                 title="🎯 Prediction Event",
                                 border_style="green"
                             ))
+                            
+                            # Auto-post to blockchain
+                            with console.status("[green]Posting to blockchain..."):
+                                result = post_to_blockchain(last_event)
+                            
+                            if result:
+                                console.print(f"[green]✓ Posted to blockchain![/]")
+                                if isinstance(result, dict):
+                                    event_id = result.get('id') or result.get('market_id') or result.get('event_id')
+                                    if event_id:
+                                        console.print(f"[dim]Event ID: {event_id}[/]")
+                            else:
+                                console.print("[yellow]⚠ Could not post to blockchain (service may be offline)[/]")
                         else:
                             console.print("[red]❌ Failed to parse URL (not RSS or scrapeable webpage)[/]")
                 else:
@@ -838,13 +887,24 @@ def scrape(url: str, post: bool, as_json: bool, as_xml: bool, yes: bool):
     event = analyze(data)
     output = event.model_dump()
     
-    # If posting, show preview and confirm first
-    if post:
-        payload = {
-            "source": {"domain": urlparse(event.source_url).netloc, "url": event.source_url},
-            "event": output
+    # Build payload in correct format
+    payload = {
+        "source": {
+            "domain": "objectwire-agent",
+            "url": event.source_url
+        },
+        "event": {
+            "title": event.title,
+            "description": event.description,
+            "category": event.category,
+            "options": event.options,
+            "confidence": event.confidence,
+            "source_url": event.source_url
         }
-        
+    }
+    
+    # If posting explicitly with --post flag, show preview first
+    if post:
         console.print("\n[bold cyan]═══ JSON Preview ═══[/]")
         console.print_json(data=payload)
         
@@ -858,28 +918,41 @@ def scrape(url: str, post: bool, as_json: bool, as_xml: bool, yes: bool):
                 sys.exit(0)
         
         with console.status("[green]Posting to blockchain..."):
-            market_id = post_to_blockchain(event)
-        if market_id:
-            output['market_id'] = market_id
-            console.print(f"\n[green]✓ Posted! Market ID:[/] [bold]{market_id}[/]")
+            result = post_to_blockchain(event)
+        if result:
+            event_id = result.get('id') or result.get('market_id') or result.get('event_id') if isinstance(result, dict) else result
+            console.print(f"\n[green]✓ Posted! Event ID:[/] [bold]{event_id}[/]")
         else:
             console.print("\n[red]❌ Failed to post to blockchain[/]")
     
-    # Output format selection (only if not posting, since we already showed preview)
+    # Output format selection
     elif as_xml:
         print_xml(output, root_name="prediction_event")
     elif as_json:
         console.print_json(data=output)
     else:
+        # Show event and auto-post
         console.print(Panel(
             f"[bold cyan]{event.title}[/]\n\n"
             f"{event.description}\n\n"
             f"[dim]Options:[/] {', '.join(event.options)}\n"
-            f"[dim]Confidence:[/] {event.confidence:.0%}\n"
-            f"[dim]Resolves:[/] {event.resolution_date}",
+            f"[dim]Confidence:[/] {event.confidence:.0%}",
             title="🎯 Prediction Event",
             border_style="green"
         ))
+        
+        # Auto-post to blockchain
+        with console.status("[green]Posting to blockchain..."):
+            result = post_to_blockchain(event)
+        
+        if result:
+            console.print(f"[green]✓ Posted to blockchain![/]")
+            if isinstance(result, dict):
+                event_id = result.get('id') or result.get('market_id') or result.get('event_id')
+                if event_id:
+                    console.print(f"[dim]Event ID: {event_id}[/]")
+        else:
+            console.print("[yellow]⚠ Could not post to blockchain (service may be offline)[/]")
 
 
 @main.command()
@@ -937,10 +1010,19 @@ def post_command(url: str, as_json: bool, as_xml: bool, yes: bool):
         sys.exit(1)
     
     event = analyze(data)
-    output = event.model_dump()
     payload = {
-        "source": {"domain": urlparse(event.source_url).netloc, "url": event.source_url},
-        "event": output
+        "source": {
+            "domain": "objectwire-agent",
+            "url": event.source_url
+        },
+        "event": {
+            "title": event.title,
+            "description": event.description,
+            "category": event.category,
+            "options": event.options,
+            "confidence": event.confidence,
+            "source_url": event.source_url
+        }
     }
     
     # Show preview
@@ -957,11 +1039,12 @@ def post_command(url: str, as_json: bool, as_xml: bool, yes: bool):
             sys.exit(0)
     
     with console.status("[green]Posting to blockchain..."):
-        market_id = post_to_blockchain(event)
+        result = post_to_blockchain(event)
     
     output = event.model_dump()
-    if market_id:
-        output['market_id'] = market_id
+    if result:
+        event_id = result.get('id') or result.get('market_id') or result.get('event_id') if isinstance(result, dict) else result
+        output['event_id'] = event_id
         output['status'] = 'posted'
     else:
         output['status'] = 'failed'
@@ -971,13 +1054,13 @@ def post_command(url: str, as_json: bool, as_xml: bool, yes: bool):
     elif as_json:
         console.print_json(data=output)
     else:
-        if market_id:
+        if result:
+            event_id = result.get('id') or result.get('market_id') or result.get('event_id') if isinstance(result, dict) else result
             console.print(Panel(
                 f"[bold cyan]{event.title}[/]\n\n"
                 f"[green]✓ Successfully posted to blockchain![/]\n"
-                f"[dim]Market ID:[/] [bold]{market_id}[/]\n\n"
-                f"[dim]Options:[/] {', '.join(event.options)}\n"
-                f"[dim]Resolves:[/] {event.resolution_date}",
+                f"[dim]Event ID:[/] [bold]{event_id}[/]\n\n"
+                f"[dim]Options:[/] {', '.join(event.options)}",
                 title="🎯 Posted Event",
                 border_style="green"
             ))

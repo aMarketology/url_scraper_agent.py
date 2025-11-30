@@ -27,7 +27,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configuration
-BLOCKCHAIN_URL = os.getenv("BLOCKCHAIN_API_URL", "http://localhost:3000")
+BLOCKCHAIN_URL = os.getenv("BLOCKCHAIN_API_URL", "http://localhost:8080")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Try importing OpenAI
